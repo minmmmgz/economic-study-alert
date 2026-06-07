@@ -128,17 +128,25 @@ def ensure_directories() -> None:
     OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
 
+def _get_env_value(name: str, default: str | None = None) -> str | None:
+    value = os.getenv(name)
+    if value is None or value.strip() == "":
+        return default
+    return value.strip()
+
+
 def load_email_config() -> dict[str, str | int | None]:
-    load_dotenv(BASE_DIR / ".env")
-    port = os.getenv("SMTP_PORT", "587")
+    load_dotenv(BASE_DIR / ".env", override=False)
+
+    port = _get_env_value("SMTP_PORT", "587")
     try:
         smtp_port: int | None = int(port)
-    except ValueError:
+    except (TypeError, ValueError):
         smtp_port = None
     return {
-        "sender": os.getenv("EMAIL_SENDER"),
-        "password": os.getenv("EMAIL_PASSWORD"),
-        "receiver": os.getenv("EMAIL_RECEIVER"),
-        "smtp_host": os.getenv("SMTP_HOST", "smtp.gmail.com"),
+        "sender": _get_env_value("EMAIL_SENDER"),
+        "password": _get_env_value("EMAIL_PASSWORD"),
+        "receiver": _get_env_value("EMAIL_RECEIVER"),
+        "smtp_host": _get_env_value("SMTP_HOST", "smtp.gmail.com"),
         "smtp_port": smtp_port,
     }
