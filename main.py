@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 from config import DATA_DIR, DEFAULT_MAX_NEWS, OUTPUTS_DIR, ensure_directories, load_email_config
 from indicators import collect_indicators
@@ -29,12 +30,12 @@ def parse_args() -> argparse.Namespace:
 
 def parse_target_date(value: str | None) -> date:
     if not value:
-        return date.today()
+        return datetime.now(ZoneInfo("Asia/Seoul")).date()
     try:
         return datetime.strptime(value, "%Y-%m-%d").date()
     except ValueError:
         print("날짜 형식이 올바르지 않아 오늘 날짜로 실행합니다. 예: --date 2026-06-08")
-        return date.today()
+        return datetime.now(ZoneInfo("Asia/Seoul")).date()
 
 
 def main() -> None:
