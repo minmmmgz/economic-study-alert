@@ -1,0 +1,33 @@
+name: Daily Economic Study Email
+
+on:
+  schedule:
+    # KST 08:30 = UTC 23:30
+    - cron: "30 23 * * *"
+  workflow_dispatch:
+
+jobs:
+  send-daily-email:
+    runs-on: ubuntu-latest
+
+    env:
+      EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
+      EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
+      EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
+      SMTP_HOST: ${{ secrets.SMTP_HOST }}
+      SMTP_PORT: ${{ secrets.SMTP_PORT }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Send daily economic study email
+        run: python main.py --max-news 5

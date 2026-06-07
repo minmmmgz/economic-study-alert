@@ -50,6 +50,35 @@ python main.py --no-send
 python main.py --date 2026-06-08 --max-news 10 --no-send
 ```
 
+## GitHub Actions 자동 실행
+
+`.github/workflows/daily_email.yml`에서 매일 아침 이메일 발송을 자동 실행합니다.
+
+자동 실행 시간은 한국시간 오전 8시 30분입니다. GitHub Actions의 cron은 UTC 기준이므로 아래처럼 설정되어 있습니다.
+
+```yaml
+cron: "30 23 * * *"
+```
+
+GitHub Repository Secrets에는 아래 값을 등록해야 합니다.
+
+```text
+EMAIL_SENDER
+EMAIL_PASSWORD
+EMAIL_RECEIVER
+SMTP_HOST
+SMTP_PORT
+```
+
+수동 실행 방법:
+
+1. GitHub 저장소에서 `Actions` 탭으로 이동합니다.
+2. `Daily Economic Study Email` workflow를 선택합니다.
+3. `Run workflow` 버튼을 누릅니다.
+4. 실행이 끝나면 등록된 이메일 주소로 리포트가 발송됩니다.
+
+로컬의 `.env` 파일은 GitHub에 올리지 않습니다. `.gitignore`에 `.env`와 `.env.*`가 포함되어 있습니다.
+
 ## 자동 생성 파일
 
 처음 실행하면 아래 파일이 없을 때 자동 생성됩니다.
