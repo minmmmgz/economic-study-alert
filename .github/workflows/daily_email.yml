@@ -11,6 +11,7 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
+      FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
       EMAIL_SENDER: ${{ secrets.EMAIL_SENDER }}
       EMAIL_PASSWORD: ${{ secrets.EMAIL_PASSWORD }}
       EMAIL_RECEIVER: ${{ secrets.EMAIL_RECEIVER }}
