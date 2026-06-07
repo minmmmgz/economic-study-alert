@@ -1,0 +1,7 @@
+﻿keyword_group,query,type,active
+미국 금리,미국 10년물 국채금리 OR 연준 OR 기준금리,core,1
+미국 물가,미국 CPI OR PCE 물가 OR 인플레이션,core,1
+미국 고용,미국 고용지표 OR 실업률 OR 비농업고용,core,1
+환율,원달러 환율 OR 달러인덱스 OR 원화,core,1
+유가,WTI 유가 OR 국제유가 OR OPEC,core,1
+한국 수급,외국인 순매수 OR 기관 순매수 OR 코스피 수급,core,1

@@ -1,0 +1,28 @@
+# secrets
+.env
+.env.*
+
+# wrong/old folder
+work/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# virtual environments
+.venv/
+venv/
+env/
+
+# generated outputs
+outputs/
+data/daily_news_raw_*.csv
+data/economic_market_indicators_*.csv
+data/keyword_candidates_*.csv
+data/daily_economic_study_note_*.txt
+
+# OS / editor
+.DS_Store
+.vscode/
