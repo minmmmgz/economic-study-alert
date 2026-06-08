@@ -84,6 +84,20 @@ def _display_change_text(row) -> str:
     return f"전일 대비 {_fmt_change_pct(row.get('change_pct'))}"
 
 
+def _summary_change_text(row) -> str:
+    if row.get("category") == "금리" or row.get("key") in {"us10y", "us_10y"}:
+        change = row.get("change")
+        if isinstance(change, str):
+            return str(change)
+        bp = change * 100
+        return f"{change:+.2f}%p, {bp:+.0f}bp"
+
+    change_pct = row.get("change_pct")
+    if isinstance(change_pct, str):
+        return change_pct
+    return f"{change_pct:+.2f}%"
+
+
 def _published_date(value) -> str:
     if value is None or str(value).strip() == "":
         return "날짜 확인 필요"
@@ -169,6 +183,136 @@ def _watchlist_section(watchlist: pd.DataFrame, sectors: pd.DataFrame) -> list[s
     return lines
 
 
+SUMMARY_INDICATORS = {
+    "nasdaq": ("나스닥", "성장주·기술주 심리"),
+    "sox": ("필라델피아 반도체지수", "글로벌 반도체 업종"),
+    "us10y": ("미국 10년물 금리", "금리 부담"),
+    "us_10y": ("미국 10년물 금리", "금리 부담"),
+    "usdkrw": ("원/달러 환율", "외국인 수급·수출환경"),
+    "wti": ("WTI 유가", "물가·에너지 비용"),
+}
+
+
+def _summary_indicator_lines(indicators: pd.DataFrame) -> list[str]:
+    lines = []
+    for key in ["nasdaq", "sox", "us10y", "us_10y", "usdkrw", "wti"]:
+        matched = indicators[indicators["key"] == key]
+        if matched.empty:
+            continue
+        row = matched.iloc[0]
+        name, tag = SUMMARY_INDICATORS[key]
+        lines.append(f"* {name}: {_summary_change_text(row)} {row['direction']} / {tag}")
+    return lines
+
+
+def _contains_any(text: str, words: list[str]) -> bool:
+    return any(word in text for word in words)
+
+
+def _summary_issues(news_df: pd.DataFrame, candidates: pd.DataFrame) -> list[str]:
+    text_parts = []
+    if not news_df.empty:
+        text_parts.extend(news_df["title"].astype(str).tolist())
+        text_parts.extend(news_df["keyword_group"].astype(str).tolist())
+    if not candidates.empty:
+        text_parts.extend(candidates["keyword"].astype(str).tolist())
+    joined = " ".join(text_parts)
+
+    issue_rules = [
+        ("환율 흐름", ["환율", "원달러", "원·달러", "달러"]),
+        ("반도체·HBM", ["반도체", "HBM", "D램", "DRAM", "메모리"]),
+        ("전력망·수주", ["전력망", "수주", "전력", "원전", "SMR"]),
+        ("유가·에너지 비용", ["유가", "WTI", "에너지", "OPEC"]),
+        ("미국 금리·고용", ["금리", "국채", "고용", "비농업", "연준"]),
+    ]
+    issues = [label for label, words in issue_rules if _contains_any(joined, words)]
+    return issues[:5] if issues else ["금리·환율 흐름", "주요 업종 뉴스", "관심 종목 이슈"]
+
+
+def _summary_market_sentences(indicators: pd.DataFrame, issues: list[str]) -> list[str]:
+    direction_by_key = {row["key"]: row["direction"] for _, row in indicators.iterrows()}
+    nasdaq_direction = direction_by_key.get("nasdaq", "확인 필요")
+    sox_direction = direction_by_key.get("sox", "확인 필요")
+    rate_direction = direction_by_key.get("us10y", direction_by_key.get("us_10y", "확인 필요"))
+    fx_direction = direction_by_key.get("usdkrw", "확인 필요")
+    issue_text = ", ".join(issues[:3])
+
+    return [
+        f"오늘은 나스닥과 반도체지수가 {nasdaq_direction}/{sox_direction} 흐름을 보였고, 금리와 환율은 각각 {rate_direction}/{fx_direction}인지 확인해야 하는 날입니다.",
+        f"뉴스와 키워드에서는 {issue_text} 이슈가 반복적으로 나타났습니다.",
+        "따라서 오늘은 개별 종목보다 금리, 환율, 반도체 업황 기대가 서로 어떻게 연결되는지 공부해 봅니다.",
+    ]
+
+
+def _watchlist_summary_lines(watchlist: pd.DataFrame) -> list[str]:
+    active_watchlist = watchlist[watchlist["active"].astype(str) == "1"]
+    if active_watchlist.empty:
+        return ["* 활성화된 관심 종목이 없습니다. watchlist.csv를 확인해 주세요."]
+
+    lines = []
+    for _, stock in active_watchlist.iterrows():
+        sector = stock.get("sector", "")
+        name = stock.get("name", "관심 종목")
+        if sector == "semiconductor":
+            point = "반도체지수 흐름과 HBM 기대 뉴스를 분리해서 보기"
+        elif sector == "auto":
+            point = "환율 변화가 수출환경과 소비수요에 어떻게 연결되는지 보기"
+        elif sector == "energy_power":
+            point = "전력망·수주 뉴스가 실제 수주 흐름으로 이어지는지 보기"
+        elif sector == "battery":
+            point = "전기차 수요와 원자재 가격 변화를 함께 보기"
+        elif sector == "shipbuilding":
+            point = "선가와 수주 뉴스가 업황 변화와 연결되는지 보기"
+        elif sector == "bank":
+            point = "금리 변화와 대출·건전성 이슈를 함께 보기"
+        elif sector == "bio":
+            point = "개별 이벤트가 업종 흐름과 구분되는지 보기"
+        else:
+            point = "오늘 뉴스가 실제 지표와 연결되는지 보기"
+        lines.append(f"* {name}: {point}")
+    return lines
+
+
+def build_email_summary(
+    target_date: date,
+    indicators: pd.DataFrame,
+    news_df: pd.DataFrame,
+    candidates: pd.DataFrame,
+    watchlist: pd.DataFrame,
+) -> str:
+    issues = _summary_issues(news_df, candidates)
+    lines = [
+        "[오늘의 경제 공부 알림]",
+        f"기준일: {target_date.isoformat()}",
+        "",
+        "1. 오늘 시장 한줄 요약",
+        "",
+    ]
+    lines.extend(f"* {sentence}" for sentence in _summary_market_sentences(indicators, issues))
+    lines.extend(["", "2. 오늘 꼭 볼 지표 5개", ""])
+    lines.extend(_summary_indicator_lines(indicators))
+    lines.extend(["", "3. 오늘 반복 이슈", ""])
+    lines.extend(f"* {issue}" for issue in issues[:5])
+    lines.extend(["", "4. 관심 종목 확인 포인트", ""])
+    lines.extend(_watchlist_summary_lines(watchlist))
+    lines.extend(
+        [
+            "",
+            "5. 오늘 노트 질문",
+            "",
+            "* 오늘 시장 부담은 금리 상승, 환율 상승, 반도체 업종 약세 중 무엇의 영향이 더 컸는가?",
+            "* 뉴스에서 반복된 이슈가 실제 지표와 수급에도 반영되고 있는가?",
+            "",
+            "6. 한줄 정리",
+            "",
+            "오늘 시장은 ______ 때문에 ______ 흐름을 보였다.",
+            "",
+            "※ 상세 지표, 뉴스 제목, 키워드 후보는 TXT/CSV에 저장되었습니다.",
+        ]
+    )
+    return _sanitize_report_text("\n".join(lines))
+
+
 def build_report(
     target_date: date,
     indicators: pd.DataFrame,
@@ -182,9 +326,6 @@ def build_report(
         "[오늘의 경제 공부 알림]",
         f"기준일: {target_date.isoformat()}",
         "",
-        "목적: 투자 판단이 아니라 경제 흐름 공부입니다.",
-        "읽는 법: 단정하지 말고 원인을 나누어 확인합니다.",
-        "",
         "1. 오늘의 핵심 지표 변화",
         "",
     ]
@@ -193,7 +334,7 @@ def build_report(
         lines.append(
             f"* {row['name_kr']} / {_fmt_value(row['latest'], row['unit'])} / {_display_change_text(row)} / {row['direction']}"
         )
-        lines.append(f"  - 왜 보는가: {row['why_watch']}")
+        lines.append(f"  {row['why_watch']}")
     lines.extend(["", "2. 지표를 이렇게 해석해볼 수 있음", ""])
 
     for _, row in indicators.iterrows():

@@ -1,4 +1,4 @@
-"""Morning economic study alert entry point."""
+"""Morning alert entry point."""
 
 from __future__ import annotations
 
@@ -17,7 +17,7 @@ from keyword_manager import (
 )
 from news_collector import collect_news
 from notifier import send_email
-from report_builder import build_report
+from report_builder import build_email_summary, build_report
 
 
 def parse_args() -> argparse.Namespace:
@@ -59,6 +59,7 @@ def main() -> None:
     news_df = collect_news(keyword_bank, target_date, news_path, max_news=args.max_news)
     candidates = extract_keyword_candidates(news_df, keyword_bank, target_date, candidates_path)
     report = build_report(target_date, indicators, news_df, candidates, watchlist, sectors, report_path)
+    email_body = build_email_summary(target_date, indicators, news_df, candidates, watchlist)
 
     print(report)
     print(f"\n저장 완료: {report_path}")
@@ -68,7 +69,7 @@ def main() -> None:
         return
 
     subject = f"[경제 공부 알림] {date_text}"
-    sent = send_email(subject, report, load_email_config())
+    sent = send_email(subject, email_body, load_email_config())
     if sent:
         print("이메일 발송 완료")
 
