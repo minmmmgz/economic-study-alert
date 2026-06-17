@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import argparse
 from datetime import date, datetime
+from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import pandas as pd
 
 from config import DATA_DIR, DEFAULT_MAX_NEWS, OUTPUTS_DIR, ensure_directories, load_email_config
 from indicators import collect_indicators
@@ -38,6 +41,29 @@ def parse_target_date(value: str | None) -> date:
         return datetime.now(ZoneInfo("Asia/Seoul")).date()
 
 
+
+def load_previous_indicators(target_date: date) -> pd.DataFrame | None:
+    """기준일보다 앞선 지표 CSV 중 가장 최근 파일을 불러옵니다."""
+    candidates: list[tuple[date, Path]] = []
+    for path in DATA_DIR.glob("economic_market_indicators_*.csv"):
+        date_text = path.stem.replace("economic_market_indicators_", "")
+        try:
+            file_date = datetime.strptime(date_text, "%Y-%m-%d").date()
+        except ValueError:
+            continue
+        if file_date < target_date:
+            candidates.append((file_date, path))
+
+    if not candidates:
+        return None
+
+    _, latest_path = max(candidates, key=lambda item: item[0])
+    try:
+        return pd.read_csv(latest_path).fillna("")
+    except Exception as exc:
+        print(f"이전 지표 파일을 읽지 못해 오늘 데이터만 사용합니다: {type(exc).__name__}")
+        return None
+
 def main() -> None:
     args = parse_args()
     target_date = parse_target_date(args.date)
@@ -55,11 +81,19 @@ def main() -> None:
     watchlist = load_watchlist()
     sectors = load_sector_templates()
 
+    previous_indicators = load_previous_indicators(target_date)
     indicators = collect_indicators(target_date, indicator_path)
     news_df = collect_news(keyword_bank, target_date, news_path, max_news=args.max_news)
     candidates = extract_keyword_candidates(news_df, keyword_bank, target_date, candidates_path)
     report = build_report(target_date, indicators, news_df, candidates, watchlist, sectors, report_path)
-    email_body = build_email_summary(target_date, indicators, news_df, candidates, watchlist)
+    email_body = build_email_summary(
+        target_date,
+        indicators,
+        previous_indicators,
+        news_df,
+        candidates,
+        watchlist,
+    )
 
     print(report)
     print(f"\n저장 완료: {report_path}")
