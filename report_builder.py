@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date
+from collections import Counter
 import re
 
 import pandas as pd
@@ -209,38 +210,198 @@ def _contains_any(text: str, words: list[str]) -> bool:
     return any(word in text for word in words)
 
 
-def _summary_issues(news_df: pd.DataFrame, candidates: pd.DataFrame) -> list[str]:
-    text_parts = []
+ISSUE_RULES = [
+    ("환율 흐름", ["환율", "원달러", "원·달러", "달러", "원화"]),
+    ("반도체·HBM", ["반도체", "HBM", "D램", "DRAM", "메모리", "엔비디아", "SK하이닉스", "삼성전자"]),
+    ("전력망·수주", ["전력망", "수주", "전력", "원전", "SMR", "가스터빈"]),
+    ("유가·에너지 비용", ["유가", "WTI", "에너지", "OPEC", "원유"]),
+    ("미국 금리·고용", ["금리", "국채", "고용", "비농업", "연준", "실업률"]),
+]
+
+
+def _summary_issues(news_df: pd.DataFrame, candidates: pd.DataFrame, limit: int = 3) -> list[str]:
+    """실제 뉴스 제목에서 많이 반복된 이슈만 빈도순으로 반환합니다."""
+    texts: list[str] = []
     if not news_df.empty:
-        text_parts.extend(news_df["title"].astype(str).tolist())
-        text_parts.extend(news_df["keyword_group"].astype(str).tolist())
+        texts.extend(news_df["title"].astype(str).tolist())
     if not candidates.empty:
-        text_parts.extend(candidates["keyword"].astype(str).tolist())
-    joined = " ".join(text_parts)
+        texts.extend(candidates["keyword"].astype(str).tolist())
 
-    issue_rules = [
-        ("환율 흐름", ["환율", "원달러", "원·달러", "달러"]),
-        ("반도체·HBM", ["반도체", "HBM", "D램", "DRAM", "메모리"]),
-        ("전력망·수주", ["전력망", "수주", "전력", "원전", "SMR"]),
-        ("유가·에너지 비용", ["유가", "WTI", "에너지", "OPEC"]),
-        ("미국 금리·고용", ["금리", "국채", "고용", "비농업", "연준"]),
-    ]
-    issues = [label for label, words in issue_rules if _contains_any(joined, words)]
-    return issues[:5] if issues else ["금리·환율 흐름", "주요 업종 뉴스", "관심 종목 이슈"]
+    counts: Counter[str] = Counter()
+    for text in texts:
+        for label, words in ISSUE_RULES:
+            hit_count = sum(text.count(word) for word in words)
+            if hit_count:
+                counts[label] += hit_count
+
+    ranked = [label for label, _ in counts.most_common(limit)]
+    return ranked if ranked else ["금리·환율 흐름", "주요 업종 뉴스", "관심 종목 이슈"]
 
 
-def _summary_market_sentences(indicators: pd.DataFrame, issues: list[str]) -> list[str]:
-    direction_by_key = {row["key"]: row["direction"] for _, row in indicators.iterrows()}
-    nasdaq_direction = direction_by_key.get("nasdaq", "확인 필요")
-    sox_direction = direction_by_key.get("sox", "확인 필요")
-    rate_direction = direction_by_key.get("us10y", direction_by_key.get("us_10y", "확인 필요"))
-    fx_direction = direction_by_key.get("usdkrw", "확인 필요")
-    issue_text = ", ".join(issues[:3])
+def _numeric(value) -> float | None:
+    try:
+        if value is None or isinstance(value, str):
+            return None
+        return float(value)
+    except (TypeError, ValueError):
+        return None
 
+
+def _row_by_key(df: pd.DataFrame | None, key: str):
+    if df is None or df.empty or "key" not in df.columns:
+        return None
+    matched = df[df["key"] == key]
+    return None if matched.empty else matched.iloc[0]
+
+
+def _movement_sentence(name: str, current, previous) -> str:
+    current_pct = _numeric(current.get("change_pct"))
+    previous_pct = _numeric(previous.get("change_pct")) if previous is not None else None
+    current_direction = str(current.get("direction", "확인 필요"))
+
+    if current_pct is None:
+        return f"{name}: 오늘 수치를 확인하지 못했습니다."
+    if previous_pct is None:
+        return f"{name}: 오늘 {current_pct:+.2f}% {current_direction}했습니다. 전날 메일 데이터가 없어 방향 비교는 생략합니다."
+
+    if previous_pct < 0 < current_pct:
+        description = "하락에서 상승으로 방향을 바꿨습니다"
+    elif previous_pct > 0 > current_pct:
+        description = "상승에서 하락으로 방향을 바꿨습니다"
+    elif current_pct > 0 and previous_pct > 0:
+        description = "상승을 이어갔고 상승 폭이 커졌습니다" if current_pct > previous_pct else "상승을 이어갔지만 상승 폭은 줄었습니다"
+    elif current_pct < 0 and previous_pct < 0:
+        description = "하락이 더 커졌습니다" if abs(current_pct) > abs(previous_pct) else "하락은 이어졌지만 하락 폭은 줄었습니다"
+    else:
+        description = "보합권 흐름을 보였습니다"
+
+    return f"{name}: {previous_pct:+.2f}% → {current_pct:+.2f}%로, {description}."
+
+
+def _comparison_lines(indicators: pd.DataFrame, previous_indicators: pd.DataFrame | None) -> list[str]:
+    lines: list[str] = []
+    for key in ["nasdaq", "sox", "us10y", "us_10y", "usdkrw", "wti"]:
+        current = _row_by_key(indicators, key)
+        if current is None:
+            continue
+        previous = _row_by_key(previous_indicators, key)
+        name = SUMMARY_INDICATORS[key][0]
+
+        if key in {"us10y", "us_10y"}:
+            current_change = _numeric(current.get("change"))
+            previous_change = _numeric(previous.get("change")) if previous is not None else None
+            if current_change is None:
+                lines.append(f"* {name}: 오늘 수치를 확인하지 못했습니다.")
+            elif previous_change is None:
+                lines.append(f"* {name}: 오늘 {current_change:+.2f}%p({current_change * 100:+.0f}bp) 움직였습니다.")
+            else:
+                current_bp = current_change * 100
+                previous_bp = previous_change * 100
+                if previous_change < 0 < current_change:
+                    note = "하락에서 상승으로 전환했습니다"
+                elif previous_change > 0 > current_change:
+                    note = "상승에서 하락으로 전환했습니다"
+                elif current_change < 0 and previous_change < 0:
+                    note = "금리 하락은 이어졌지만 하락 폭이 달라졌습니다"
+                elif current_change > 0 and previous_change > 0:
+                    note = "금리 상승이 이어졌습니다"
+                else:
+                    note = "방향 변화가 크지 않았습니다"
+                lines.append(f"* {name}: {previous_bp:+.0f}bp → {current_bp:+.0f}bp로, {note}.")
+            continue
+
+        lines.append(f"* {_movement_sentence(name, current, previous)}")
+    return lines
+
+
+def _main_issue(indicators: pd.DataFrame, previous_indicators: pd.DataFrame | None, issues: list[str]) -> str:
+    candidates: list[tuple[float, str]] = []
+    for key, label, weight in [
+        ("sox", "반도체 급락·반등의 지속 가능성", 1.35),
+        ("nasdaq", "미국 기술주 심리 변화", 1.0),
+        ("usdkrw", "환율 방향 변화와 외국인 수급", 1.15),
+        ("wti", "유가 변화와 물가·에너지 비용", 1.0),
+    ]:
+        current = _row_by_key(indicators, key)
+        if current is None:
+            continue
+        value = _numeric(current.get("change_pct"))
+        if value is None:
+            continue
+        previous = _row_by_key(previous_indicators, key)
+        previous_value = _numeric(previous.get("change_pct")) if previous is not None else None
+        reversal_bonus = 2.5 if previous_value is not None and value * previous_value < 0 else 0.0
+        score = abs(value) * weight + reversal_bonus
+        candidates.append((score, label))
+
+    rate = _row_by_key(indicators, "us10y")
+    if rate is None:
+        rate = _row_by_key(indicators, "us_10y")
+    if rate is not None:
+        change = _numeric(rate.get("change"))
+        if change is not None:
+            candidates.append((abs(change * 100) * 0.7, "미국 장기금리 변화와 성장주 부담"))
+
+    if not candidates:
+        return issues[0] if issues else "오늘 시장의 핵심 변화 확인"
+    return max(candidates, key=lambda item: item[0])[1]
+
+
+def _verification_questions(main_issue: str) -> list[str]:
+    if "반도체" in main_issue or "기술주" in main_issue:
+        return [
+            "삼성전자와 SK하이닉스도 같은 방향으로 움직였는가?",
+            "외국인이 반도체 대형주를 다시 샀는가?",
+            "반도체 ETF는 거래량을 동반해 움직였는가?",
+        ]
+    if "환율" in main_issue:
+        return [
+            "코스피 외국인 수급이 환율 방향과 같은 흐름을 보였는가?",
+            "현대차 등 수출주의 움직임이 자동차 업종 전체와 같았는가?",
+            "달러인덱스와 원/달러 환율이 같은 방향이었는가?",
+        ]
+    if "유가" in main_issue:
+        return [
+            "정유·에너지 업종은 강했고 항공·화학 업종은 약했는가?",
+            "유가 변화가 물가와 금리 부담 기사로 이어졌는가?",
+            "유가 움직임이 수요 때문인지 공급 뉴스 때문인지 확인했는가?",
+        ]
     return [
-        f"오늘은 나스닥과 반도체지수가 {nasdaq_direction}/{sox_direction} 흐름을 보였고, 금리와 환율은 각각 {rate_direction}/{fx_direction}인지 확인해야 하는 날입니다.",
-        f"뉴스와 키워드에서는 {issue_text} 이슈가 반복적으로 나타났습니다.",
-        "따라서 오늘은 개별 종목보다 금리, 환율, 반도체 업황 기대가 서로 어떻게 연결되는지 공부해 봅니다.",
+        "코스피 외국인·기관 수급은 어느 방향이었는가?",
+        "오늘 가장 강한 업종과 약한 업종은 무엇이었는가?",
+        "뉴스에서 나온 기대가 실제 가격과 거래량에도 반영됐는가?",
+    ]
+
+
+def _summary_market_sentences(
+    indicators: pd.DataFrame,
+    previous_indicators: pd.DataFrame | None,
+    issues: list[str],
+    main_issue: str,
+) -> list[str]:
+    current_map = {row["key"]: row for _, row in indicators.iterrows()}
+    nasdaq = current_map.get("nasdaq")
+    sox = current_map.get("sox")
+    rate = current_map.get("us10y", current_map.get("us_10y"))
+    fx = current_map.get("usdkrw")
+
+    parts = []
+    if nasdaq is not None:
+        parts.append(f"나스닥은 {nasdaq['direction']}")
+    if sox is not None:
+        parts.append(f"반도체지수는 {sox['direction']}")
+    if rate is not None:
+        parts.append(f"금리는 {rate['direction']}")
+    if fx is not None:
+        parts.append(f"환율은 {fx['direction']}")
+
+    issue_text = ", ".join(issues[:3])
+    comparison_available = previous_indicators is not None and not previous_indicators.empty
+    comparison_note = "전날 메일과 비교하면 방향 전환과 변화폭을 함께 확인해야 합니다." if comparison_available else "전날 저장 파일이 없어 오늘 수치 중심으로 봅니다."
+    return [
+        f"오늘은 {' · '.join(parts)} 흐름입니다. {comparison_note}",
+        f"오늘의 주인공 이슈는 '{main_issue}'입니다.",
+        f"뉴스 제목에서는 {issue_text} 이슈가 상대적으로 많이 반복됐습니다.",
     ]
 
 
@@ -276,11 +437,13 @@ def _watchlist_summary_lines(watchlist: pd.DataFrame) -> list[str]:
 def build_email_summary(
     target_date: date,
     indicators: pd.DataFrame,
+    previous_indicators: pd.DataFrame | None,
     news_df: pd.DataFrame,
     candidates: pd.DataFrame,
     watchlist: pd.DataFrame,
 ) -> str:
-    issues = _summary_issues(news_df, candidates)
+    issues = _summary_issues(news_df, candidates, limit=3)
+    main_issue = _main_issue(indicators, previous_indicators, issues)
     lines = [
         "[오늘의 경제 공부 알림]",
         f"기준일: {target_date.isoformat()}",
@@ -288,22 +451,27 @@ def build_email_summary(
         "1. 오늘 시장 한줄 요약",
         "",
     ]
-    lines.extend(f"* {sentence}" for sentence in _summary_market_sentences(indicators, issues))
+    lines.extend(f"* {sentence}" for sentence in _summary_market_sentences(indicators, previous_indicators, issues, main_issue))
     lines.extend(["", "2. 오늘 꼭 볼 지표 5개", ""])
     lines.extend(_summary_indicator_lines(indicators))
-    lines.extend(["", "3. 오늘 반복 이슈", ""])
-    lines.extend(f"* {issue}" for issue in issues[:5])
-    lines.extend(["", "4. 관심 종목 확인 포인트", ""])
+    lines.extend(["", "3. 어제와 달라진 점", ""])
+    lines.extend(_comparison_lines(indicators, previous_indicators))
+    lines.extend(["", "4. 오늘의 주인공 이슈", "", f"* {main_issue}"])
+    lines.extend(["", "5. 오늘 주요 반복 이슈", ""])
+    lines.extend(f"* {issue}" for issue in issues)
+    lines.extend(["", "6. 관심 종목 확인 포인트", ""])
     lines.extend(_watchlist_summary_lines(watchlist))
+    lines.extend(["", "7. 장 마감 후 확인할 것", ""])
+    lines.extend(f"* {question}" for question in _verification_questions(main_issue))
     lines.extend(
         [
             "",
-            "5. 오늘 노트 질문",
+            "8. 오늘 노트 질문",
             "",
-            "* 오늘 시장 부담은 금리 상승, 환율 상승, 반도체 업종 약세 중 무엇의 영향이 더 컸는가?",
-            "* 뉴스에서 반복된 이슈가 실제 지표와 수급에도 반영되고 있는가?",
+            "* 오늘 가장 큰 변화는 무엇이었고, 한국 시장에서도 같은 방향으로 나타났는가?",
+            "* 뉴스에서 반복된 이슈가 실제 수급과 거래량에도 반영되었는가?",
             "",
-            "6. 한줄 정리",
+            "9. 한줄 정리",
             "",
             "오늘 시장은 ______ 때문에 ______ 흐름을 보였다.",
             "",
